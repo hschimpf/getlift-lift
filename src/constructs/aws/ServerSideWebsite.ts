@@ -1,4 +1,4 @@
-import type { CfnBucket } from "aws-cdk-lib/aws-s3";
+import type { CfnBucket, IBucket } from "aws-cdk-lib/aws-s3";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import type { CfnDistribution } from "aws-cdk-lib/aws-cloudfront";
 import { OriginRequestPolicy } from "aws-cdk-lib/aws-cloudfront";
@@ -315,6 +315,11 @@ export class ServerSideWebsite extends AwsConstruct {
 
         let hasChanges = false;
         for (const [pattern, filePath] of Object.entries(this.getAssetPatterns())) {
+            // Ignore external buckets
+            if (filePath.startsWith("s3://")) {
+                continue;
+            }
+
             if (!fs.existsSync(filePath)) {
                 throw new ServerlessError(
                     `Error in 'constructs.${this.id}': the file or directory '${filePath}' does not exist`,
@@ -445,7 +450,8 @@ export class ServerSideWebsite extends AwsConstruct {
 
     private createCacheBehaviors(bucket: Bucket): Record<string, BehaviorOptions> {
         const behaviors: Record<string, BehaviorOptions> = {};
-        const assetPatterns = Object.keys(this.getAssetPatterns());
+        const patterns = this.getAssetPatterns();
+        const assetPatterns = Object.keys(patterns);
 
         if (assetPatterns.length === 0) {
             return behaviors;
@@ -457,6 +463,8 @@ export class ServerSideWebsite extends AwsConstruct {
             originAccessControlName: ensureNameMaxLength(`${this.provider.stackName}-${this.id}-oac`, 64),
         });
 
+        const customOrigins: Record<string, IBucket> = {};
+
         for (const pattern of assetPatterns) {
             if (pattern === "/" || pattern === "/*") {
                 throw new ServerlessError(
@@ -464,9 +472,35 @@ export class ServerSideWebsite extends AwsConstruct {
                     "LIFT_INVALID_CONSTRUCT_CONFIGURATION"
                 );
             }
+
+            let origin = S3BucketOrigin.withOriginAccessControl(bucket, { originAccessControl });
+            if (patterns[pattern].startsWith("s3://")) {
+                let existingBucketName = patterns[pattern].substring(5);
+                let originPath = "/";
+
+                // Support mapping to custom origin paths
+                if (existingBucketName.indexOf("/") !== -1) {
+                    originPath = existingBucketName.substring(existingBucketName.indexOf("/") + 1);
+                    existingBucketName = existingBucketName.split("/", 1)[0];
+                }
+
+                if (!(existingBucketName in customOrigins)) {
+                    customOrigins[existingBucketName] = Bucket.fromBucketName(
+                        this,
+                        existingBucketName,
+                        existingBucketName
+                    );
+                }
+
+                origin = S3BucketOrigin.withOriginAccessControl(customOrigins[existingBucketName], {
+                    originAccessControl,
+                    originPath,
+                });
+            }
+
             behaviors[pattern] = {
                 // Origins are where CloudFront fetches content
-                origin: S3BucketOrigin.withOriginAccessControl(bucket, { originAccessControl }),
+                origin,
                 allowedMethods: AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 // Use the "Managed-CachingOptimized" policy
                 // See https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-policies-list
