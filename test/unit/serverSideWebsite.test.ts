@@ -30,6 +30,7 @@ function createServerSideWebsite({
         getStackOutput,
         getS3Client: () => Promise.resolve(new S3Client({ region: "us-east-1" })),
         getCloudFrontClient: () => Promise.resolve(new CloudFrontClient({ region: "us-east-1" })),
+        getWebLambdaFunctions: () => [],
     } as unknown as AwsProvider;
 
     return new ServerSideWebsite(
